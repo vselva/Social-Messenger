@@ -1,6 +1,6 @@
-# WhatsApp Daily Message Sender
+# Social Messenger - WhatsApp & Telegram
 
-Send daily spiritual images + text messages to multiple WhatsApp groups safely, with support for multiple languages.
+Send daily spiritual images + text messages to multiple WhatsApp and Telegram groups safely, with support for multiple languages.
 
 **Sends image with caption in a single message to each group**
 
@@ -57,6 +57,7 @@ Wait for it to complete (may take 1-2 minutes).
 
 **Note:** This will install:
 - `whatsapp-web.js v1.34.3` - HD quality support for status posts
+- `node-telegram-bot-api` - Telegram bot integration
 - `sharp` - Automatic image upscaling for HD quality
 
 ### Step 4: Set Up Language Folders
@@ -127,6 +128,92 @@ Create two JSON files for your group lists:
 ```
 
 Copy the exact group IDs from `groups-list.json` that was generated in Step 5.
+
+### Step 7: Set Up Telegram Bot (Optional)
+
+To send messages to Telegram groups, you need to create a Telegram bot:
+
+#### A. Create a Bot
+1. Open Telegram and search for `@BotFather`
+2. Send `/newbot` command
+3. Follow the prompts to name your bot
+4. Copy the **Bot Token** (looks like `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+#### B. Configure the Bot Token
+
+**Option 1: Using .env file (Recommended)**
+1. Copy `.env.example` to `.env`
+2. Edit `.env` and replace `your_bot_token_here` with your actual token:
+```
+TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+```
+
+**Option 2: Environment Variable**
+```bash
+# Windows CMD
+set TELEGRAM_BOT_TOKEN=your_bot_token_here
+
+# Windows PowerShell
+$env:TELEGRAM_BOT_TOKEN="your_bot_token_here"
+
+# Linux/Mac
+export TELEGRAM_BOT_TOKEN=your_bot_token_here
+```
+
+#### C. Get Your Telegram Group/Channel Chat IDs
+
+1. Add your bot to the Telegram group/channel as an admin
+2. Send a message in the group
+3. Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+4. Find the `chat.id` in the response (negative number for groups, e.g., `-1001234567890`)
+
+#### D. Configure Telegram Groups
+
+**`telegram-groups-english-list.json`** - Telegram groups for English messages:
+```json
+[
+    {
+        "name": "English Telegram Group",
+        "chatId": "-1001234567890"
+    }
+]
+```
+
+**`telegram-groups-tamil-list.json`** - Telegram groups for Tamil messages:
+```json
+[
+    {
+        "name": "Tamil Telegram Group",
+        "chatId": "-1001234567890"
+    }
+]
+```
+
+**For Forum Groups (with Topics):**
+
+If your Telegram group is a Forum group (supergroup with multiple topics), you need to specify the `topicId` to send messages to a specific topic instead of "General":
+
+```json
+[
+    {
+        "name": "Tamil Forum Topic",
+        "chatId": "-1001234567890",
+        "topicId": 6320
+    }
+]
+```
+
+**How to find the topicId:**
+1. Open the Telegram group in Telegram Web (https://web.telegram.org)
+2. Click on the specific topic you want to post to
+3. Look at the URL: `https://web.telegram.org/a/#-1001234567890_6320`
+4. The number after the underscore (`6320`) is the `topicId`
+
+**Notes:**
+- The `chatId` is a negative number for groups/channels
+- The `topicId` is only needed for Forum groups - omit it for regular groups
+- Make sure your bot is added as an **admin** to send messages
+- WhatsApp formatting (`*bold*`, ``` ```italic``` ```) is automatically converted to Telegram format
 
 ---
 
@@ -204,28 +291,31 @@ This will first post to status, then send to all groups.
 ## 📁 Project Structure
 
 ```
-whatsapp-sender/
-├── index.js                      # Main script
-├── package.json                  # Dependencies
-├── README.md                     # This file
-├── .gitignore                    # Git ignore rules
-├── groups-tamil-list.json        # Tamil groups configuration
-├── groups-english-list.json      # English groups configuration
-├── groups-list.json              # Generated list of all groups
+social-messenger/
+├── index.js                           # Main script
+├── package.json                       # Dependencies
+├── README.md                          # This file
+├── .gitignore                         # Git ignore rules
+├── groups-tamil-list.json             # WhatsApp Tamil groups
+├── groups-english-list.json           # WhatsApp English groups
+├── telegram-groups-tamil-list.json    # Telegram Tamil groups
+├── telegram-groups-english-list.json  # Telegram English groups
+├── groups-list.json                   # Generated list of all WhatsApp groups
 ├── tamil/
-│   ├── tamil.txt                 # Daily Tamil message
-│   └── [date]-tamil.jpg          # Daily Tamil image
+│   ├── tamil.txt                      # Daily Tamil message
+│   └── [date]-tamil.jpg               # Daily Tamil image
 ├── english/
-│   ├── english.txt               # Daily English message
-│   └── [date]-english.jpg        # Daily English image
-├── .wwebjs_auth/                 # Auto-generated (WhatsApp session)
-└── .wwebjs_cache/                # Auto-generated (WhatsApp cache)
+│   ├── english.txt                    # Daily English message
+│   └── [date]-english.jpg             # Daily English image
+├── .wwebjs_auth/                      # Auto-generated (WhatsApp session)
+└── .wwebjs_cache/                     # Auto-generated (WhatsApp cache)
 ```
 
 ---
 
 ## 🎯 Features
 
+- **Multi-platform Support**: Send to both WhatsApp and Telegram from a single tool
 - **Multi-language Support**: Send different messages to different group sets (English & Tamil)
 - **WhatsApp Status**: Post images with captions to your WhatsApp Status
 - **Image with Caption**: Sends image and text as a single combined message
@@ -234,6 +324,7 @@ whatsapp-sender/
 - **Easy Configuration**: Simple JSON files for group management
 - **Persistent Login**: Saves WhatsApp session (no need to scan QR every time)
 - **Multiple Commands**: List groups, send to groups, or post to status
+- **Flexible Sending**: Send to WhatsApp only, Telegram only, or both
 
 ---
 
@@ -332,17 +423,27 @@ The script now uses HD quality mode (requires whatsapp-web.js v1.34.3+). To get 
 You can run these commands:
 
 ```bash
+# Send to everything: WhatsApp status + WhatsApp groups + Telegram groups
+# (Automatically deletes images on success)
+node index.js send-all
+
+# Send to WhatsApp groups only
+node index.js send-wa
+
+# Send to Telegram groups only
+node index.js send-telegram
+
+# Post images to your WhatsApp Status only
+node index.js send-wa-status
+
 # List all your WhatsApp groups
-node index.js list
+node index.js wa-list
 
-# Post images to your WhatsApp Status
-node index.js status
+# Delete all images from tamil/ and english/ folders
+node index.js clean-images
 
-# Send messages to all configured groups
-node index.js send
-
-# Post to status AND send to groups (combined)
-node index.js status && node index.js send
+# Show help
+node index.js -h
 ```
 
 ---

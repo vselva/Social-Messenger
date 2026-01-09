@@ -1,13 +1,18 @@
 {
-  "name": "whatsapp-daily-sender",
-  "version": "1.0.0",
-  "description": "Send daily spiritual messages to WhatsApp groups",
+  "name": "social-messenger",
+  "version": "2.0.0",
+  "description": "Send daily spiritual messages to WhatsApp and Telegram groups",
   "main": "index.js",
   "scripts": {
     "list": "node index.js list",
-    "send": "node index.js send"
+    "send": "node index.js send",
+    "send-whatsapp": "node index.js send-whatsapp",
+    "send-telegram": "node index.js send-telegram",
+    "status": "node index.js status"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
+    "node-telegram-bot-api": "^0.67.0",
     "qrcode-terminal": "^0.12.0",
     "sharp": "^0.33.5",
     "whatsapp-web.js": "^1.34.3"
