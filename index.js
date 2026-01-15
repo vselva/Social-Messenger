@@ -382,8 +382,8 @@ async function sendToStatus() {
 
             console.log(`📝 Posting image to status...`);
 
-            // Send to status
-            await client.sendMessage('status@broadcast', media);
+            // Send to status (sendSeen: false to avoid markedUnread bug)
+            await client.sendMessage('status@broadcast', media, { sendSeen: false });
 
             console.log(`✅ ${langConfig.name.toUpperCase()} status posted successfully!\n`);
 
@@ -504,9 +504,11 @@ async function sendToLanguageGroups(lang, config, allGroups) {
             console.log(`[${i + 1}/${matchedGroups.length}] Sending to: ${group.name}`);
 
             // Send Image with Caption (as a single message)
+            // sendSeen: false to avoid markedUnread bug in whatsapp-web.js
             console.log(`   📷 Sending image with caption...`);
             await client.sendMessage(group.id._serialized, media, {
-                caption: messageText
+                caption: messageText,
+                sendSeen: false
             });
 
             console.log(`   ✅ Sent successfully!`);
