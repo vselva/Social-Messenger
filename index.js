@@ -115,6 +115,32 @@ function initTelegramBot() {
     return false;
 }
 
+// Loading spinner for initialization
+let spinnerInterval = null;
+function startSpinner(message) {
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
+    process.stdout.write(`${message} ${frames[0]}`);
+    spinnerInterval = setInterval(() => {
+        i = (i + 1) % frames.length;
+        process.stdout.clearLine(0);
+        process.stdout.cursorTo(0);
+        process.stdout.write(`${message} ${frames[i]}`);
+    }, 80);
+}
+
+function stopSpinner(successMessage) {
+    if (spinnerInterval) {
+        clearInterval(spinnerInterval);
+        spinnerInterval = null;
+        process.stdout.clearLine(0);
+        process.stdout.cursorTo(0);
+        if (successMessage) {
+            console.log(successMessage);
+        }
+    }
+}
+
 // Generate random delay for safety
 function getRandomDelay() {
     return Math.floor(Math.random() * (CONFIG.maxDelay - CONFIG.minDelay + 1)) + CONFIG.minDelay;
@@ -226,19 +252,22 @@ function validateLanguageConfig(lang, config) {
 
 // Display QR code for login
 client.on('qr', (qr) => {
+    stopSpinner();
     console.log('\n📱 Scan this QR code with WhatsApp:\n');
     qrcode.generate(qr, { small: true });
     console.log('\nOpen WhatsApp > Settings > Linked Devices > Link a Device\n');
+    startSpinner('   Waiting for scan');
 });
 
 // When authenticated
 client.on('authenticated', () => {
-    console.log('✅ Authenticated successfully!');
+    stopSpinner('✅ Authenticated successfully!');
+    startSpinner('   Loading WhatsApp data');
 });
 
 // When ready
 client.on('ready', async () => {
-    console.log('✅ WhatsApp client is ready!\n');
+    stopSpinner('✅ WhatsApp client is ready!\n');
 
     // Initialize Telegram bot
     const telegramReady = initTelegramBot();
@@ -709,10 +738,12 @@ async function sendToTelegramGroups(lang, config) {
 
 // Handle errors
 client.on('auth_failure', (msg) => {
+    stopSpinner();
     console.log('❌ Authentication failed:', msg);
 });
 
 client.on('disconnected', (reason) => {
+    stopSpinner();
     console.log('❌ Disconnected:', reason);
 });
 
@@ -732,5 +763,6 @@ if (command === 'send-telegram') {
 } else {
     // Start WhatsApp client for other commands
     console.log('🚀 Starting WhatsApp client...\n');
+    startSpinner('   Connecting to WhatsApp Web');
     client.initialize();
 }
