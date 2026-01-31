@@ -12,7 +12,7 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
     console.log('  send-telegram  Send to Telegram groups only');
     console.log('  send-wa-status Post images to your WhatsApp status only');
     console.log('  wa-list        List all your WhatsApp groups');
-    console.log('  clean-images   Delete all images from tamil/ and english/ folders');
+    console.log('  clean-images   Delete all images from contents/ folder');
     console.log('  help, -h       Show this help message\n');
     console.log('Examples:');
     console.log('  node index.js send-all');
@@ -24,16 +24,13 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
 // Handle clean-images command without loading dependencies
 if (command === 'clean-images') {
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-    const folders = ['./english', './tamil'];
+    const folder = './contents';
 
-    console.log('🗑️  Cleaning up images from language folders...\n');
+    console.log('🗑️  Cleaning up images from contents folder...\n');
 
-    for (const folder of folders) {
-        if (!fs.existsSync(folder)) {
-            console.log(`⚠️  Folder not found: ${folder}`);
-            continue;
-        }
-
+    if (!fs.existsSync(folder)) {
+        console.log(`⚠️  Folder not found: ${folder}`);
+    } else {
         console.log(`📁 ${folder}:`);
         const files = fs.readdirSync(folder);
         let deletedCount = 0;
@@ -76,19 +73,22 @@ const CONFIG = {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE',
 
     // Language configurations (ordered - English first, then Tamil)
+    // All content lives in ./contents with prefix-based image naming (e.jpg/e.png, t.jpg/t.png)
     languages: [
         {
             name: 'english',
             groupListFile: './config/groups-english-list.json',
-            folder: './english',
+            folder: './contents',
             messageFile: 'english.txt',
+            imagePrefix: 'e',
             telegramGroupListFile: './config/telegram-groups-english-list.json'
         },
         {
             name: 'tamil',
             groupListFile: './config/groups-tamil-list.json',
-            folder: './tamil',
+            folder: './contents',
             messageFile: 'tamil.txt',
+            imagePrefix: 't',
             telegramGroupListFile: './config/telegram-groups-tamil-list.json'
         }
     ]
@@ -151,14 +151,38 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Find image file in a folder (any .jpg file)
-function findImageInFolder(folder) {
+// Get chats with retry (WhatsApp internal data may not be ready immediately after 'ready' event)
+async function getChatsWithRetry(maxRetries = 5, delayMs = 3000) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const chats = await client.getChats();
+            return chats;
+        } catch (error) {
+            if (attempt < maxRetries) {
+                console.log(`⚠️  getChats failed (attempt ${attempt}/${maxRetries}): ${error.message}`);
+                console.log(`   Retrying in ${Math.round(delayMs / 1000)} seconds...`);
+                await sleep(delayMs);
+            } else {
+                throw error;
+            }
+        }
+    }
+}
+
+// Find image file in a folder by prefix (e.g., prefix 'e' matches e.jpg, e.png, e.jpeg, e.webp)
+function findImageInFolder(folder, prefix) {
     if (!fs.existsSync(folder)) {
         return null;
     }
 
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
     const files = fs.readdirSync(folder);
-    const imageFile = files.find(file => file.toLowerCase().endsWith('.jpg'));
+    const imageFile = files.find(file => {
+        const lower = file.toLowerCase();
+        const name = path.parse(lower).name;
+        const ext = path.parse(lower).ext;
+        return name === prefix && imageExtensions.includes(ext);
+    });
 
     if (imageFile) {
         return path.join(folder, imageFile);
@@ -166,8 +190,8 @@ function findImageInFolder(folder) {
     return null;
 }
 
-// Delete all image files in a folder (keeps .txt files)
-function deleteImagesInFolder(folder) {
+// Delete image files in a folder matching a prefix (keeps .txt files and other prefixes)
+function deleteImagesInFolder(folder, prefix) {
     if (!fs.existsSync(folder)) {
         return;
     }
@@ -176,8 +200,10 @@ function deleteImagesInFolder(folder) {
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
 
     for (const file of files) {
-        const ext = path.extname(file).toLowerCase();
-        if (imageExtensions.includes(ext)) {
+        const lower = file.toLowerCase();
+        const name = path.parse(lower).name;
+        const ext = path.parse(lower).ext;
+        if (imageExtensions.includes(ext) && name === prefix) {
             const filePath = path.join(folder, file);
             fs.unlinkSync(filePath);
             console.log(`   🗑️  Deleted: ${file}`);
@@ -203,15 +229,21 @@ async function upscaleImageForHD(imagePath) {
 
     console.log(`   📏 Upscaling from ${currentWidth}x${metadata.height}px to ${targetWidth}x${targetHeight}px`);
 
-    // Create upscaled version
-    const tempPath = imagePath.replace('.jpg', '-hd.jpg');
-    await sharp(imagePath)
+    // Create upscaled version (preserve original format)
+    const ext = path.extname(imagePath);
+    const base = imagePath.slice(0, -ext.length);
+    const tempPath = `${base}-hd${ext}`;
+    let pipeline = sharp(imagePath)
         .resize(targetWidth, targetHeight, {
             fit: 'contain',
             kernel: 'lanczos3' // High-quality upscaling algorithm
-        })
-        .jpeg({ quality: 95 }) // High quality JPEG
-        .toFile(tempPath);
+        });
+    if (ext.toLowerCase() === '.png') {
+        pipeline = pipeline.png({ quality: 95 });
+    } else {
+        pipeline = pipeline.jpeg({ quality: 95 });
+    }
+    await pipeline.toFile(tempPath);
 
     return tempPath;
 }
@@ -229,10 +261,10 @@ function validateLanguageConfig(lang, config) {
     if (!fs.existsSync(config.folder)) {
         errors.push(`❌ Folder not found: ${config.folder}`);
     } else {
-        // Check for image file
-        const imagePath = findImageInFolder(config.folder);
+        // Check for image file by prefix
+        const imagePath = findImageInFolder(config.folder, config.imagePrefix);
         if (!imagePath) {
-            errors.push(`❌ No .jpg image file found in: ${config.folder}`);
+            errors.push(`❌ No image file found for prefix '${config.imagePrefix}' in: ${config.folder}`);
         }
 
         // Check for message file
@@ -296,9 +328,9 @@ client.on('ready', async () => {
 
         // Delete images only if all sends were successful
         if (allSuccess) {
-            console.log('\n🗑️  Cleaning up images from language folders...');
+            console.log('\n🗑️  Cleaning up images from contents folder...');
             for (const langConfig of CONFIG.languages) {
-                deleteImagesInFolder(langConfig.folder);
+                deleteImagesInFolder(langConfig.folder, langConfig.imagePrefix);
             }
             console.log('✅ All images deleted successfully!');
         } else {
@@ -336,7 +368,7 @@ client.on('ready', async () => {
 async function listGroups() {
     console.log('📋 Fetching your groups...\n');
 
-    const chats = await client.getChats();
+    const chats = await getChatsWithRetry();
     const groups = chats.filter(chat => chat.isGroup);
 
     console.log(`Found ${groups.length} groups:\n`);
@@ -397,8 +429,8 @@ async function sendToStatus() {
         console.log(`📨 Posting ${langConfig.name.toUpperCase()} status`);
         console.log('═'.repeat(60));
 
-        // Find image file
-        const imagePath = findImageInFolder(langConfig.folder);
+        // Find image file by prefix
+        const imagePath = findImageInFolder(langConfig.folder, langConfig.imagePrefix);
 
         try {
             console.log(`📷 Image: ${path.basename(imagePath)}`);
@@ -468,10 +500,6 @@ async function sendToAllLanguages() {
     console.log('✅ All configurations validated successfully!\n');
     console.log('📤 Starting to send messages...\n');
 
-    // Get all groups from WhatsApp
-    const chats = await client.getChats();
-    const allGroups = chats.filter(chat => chat.isGroup);
-
     let allSuccess = true;
 
     // Send to each language (English first, then Tamil)
@@ -480,7 +508,7 @@ async function sendToAllLanguages() {
         console.log(`📨 Sending ${langConfig.name.toUpperCase()} messages`);
         console.log('═'.repeat(60));
 
-        const success = await sendToLanguageGroups(langConfig.name, langConfig, allGroups);
+        const success = await sendToLanguageGroups(langConfig.name, langConfig);
         if (!success) allSuccess = false;
         console.log('');
     }
@@ -489,13 +517,13 @@ async function sendToAllLanguages() {
     return allSuccess;
 }
 
-// Send to groups for a specific language
-async function sendToLanguageGroups(lang, config, allGroups) {
+// Send to groups for a specific language (sends directly by group ID from config)
+async function sendToLanguageGroups(lang, config) {
     // Load group list for this language
     const groupList = JSON.parse(fs.readFileSync(config.groupListFile, 'utf8'));
 
-    // Find image file and upscale for HD quality
-    const imagePath = findImageInFolder(config.folder);
+    // Find image file by prefix and upscale for HD quality
+    const imagePath = findImageInFolder(config.folder, config.imagePrefix);
     console.log(`\n📷 Image: ${path.basename(imagePath)}`);
 
     // Upscale image for HD quality
@@ -511,31 +539,20 @@ async function sendToLanguageGroups(lang, config, allGroups) {
     console.log(messageText.substring(0, 100) + (messageText.length > 100 ? '...' : ''));
     console.log('─'.repeat(40));
 
-    // Match groups from the list with actual WhatsApp groups
-    const matchedGroups = [];
-    for (const groupInfo of groupList) {
-        const found = allGroups.find(g => g.id._serialized === groupInfo.id);
-        if (found) {
-            matchedGroups.push(found);
-        } else {
-            console.log(`⚠️  Group not found: "${groupInfo.name}" (${groupInfo.id})`);
-        }
-    }
+    console.log(`📱 Sending to ${groupList.length} groups\n`);
 
-    console.log(`📱 Found ${matchedGroups.length} of ${groupList.length} groups\n`);
-
-    // Send to each group
+    // Send to each group directly by ID
     let successCount = 0;
-    for (let i = 0; i < matchedGroups.length; i++) {
-        const group = matchedGroups[i];
+    for (let i = 0; i < groupList.length; i++) {
+        const group = groupList[i];
 
         try {
-            console.log(`[${i + 1}/${matchedGroups.length}] Sending to: ${group.name}`);
+            console.log(`[${i + 1}/${groupList.length}] Sending to: ${group.name}`);
 
             // Send Image with Caption (as a single message)
             // sendSeen: false to avoid markedUnread bug in whatsapp-web.js
             console.log(`   📷 Sending image with caption...`);
-            await client.sendMessage(group.id._serialized, media, {
+            await client.sendMessage(group.id, media, {
                 caption: messageText,
                 sendSeen: false
             });
@@ -544,7 +561,7 @@ async function sendToLanguageGroups(lang, config, allGroups) {
             successCount++;
 
             // Random delay before next group (except for last one)
-            if (i < matchedGroups.length - 1) {
+            if (i < groupList.length - 1) {
                 const delay = getRandomDelay();
                 console.log(`   ⏳ Waiting ${Math.round(delay/1000)} seconds before next group...\n`);
                 await sleep(delay);
@@ -560,10 +577,10 @@ async function sendToLanguageGroups(lang, config, allGroups) {
         console.log(`🗑️  Cleaned up temporary HD file`);
     }
 
-    console.log(`\n✅ ${lang.toUpperCase()}: Sent to ${successCount}/${matchedGroups.length} groups`);
+    console.log(`\n✅ ${lang.toUpperCase()}: Sent to ${successCount}/${groupList.length} groups`);
 
     // Return true only if all groups received the message
-    return successCount === matchedGroups.length;
+    return successCount === groupList.length;
 }
 
 // ============== TELEGRAM FUNCTIONS ==============
@@ -594,10 +611,10 @@ function validateTelegramConfig(lang, config) {
     if (!fs.existsSync(config.folder)) {
         errors.push(`❌ Folder not found: ${config.folder}`);
     } else {
-        // Check for image file
-        const imagePath = findImageInFolder(config.folder);
+        // Check for image file by prefix
+        const imagePath = findImageInFolder(config.folder, config.imagePrefix);
         if (!imagePath) {
-            errors.push(`❌ No .jpg image file found in: ${config.folder}`);
+            errors.push(`❌ No image file found for prefix '${config.imagePrefix}' in: ${config.folder}`);
         }
 
         // Check for message file
@@ -680,8 +697,8 @@ async function sendToTelegramGroups(lang, config) {
         return true; // No groups to send to, consider it success
     }
 
-    // Find image file
-    const imagePath = findImageInFolder(config.folder);
+    // Find image file by prefix
+    const imagePath = findImageInFolder(config.folder, config.imagePrefix);
     console.log(`\n📷 Image: ${path.basename(imagePath)}`);
 
     // Read message text
