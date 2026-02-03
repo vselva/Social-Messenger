@@ -1,8 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-// Check for help command first (before loading other dependencies)
+// Check for help command and validate commands first (before loading other dependencies)
 const command = process.argv[2];
+const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'wa-list', 'clean-images', 'help', '-h', '--help'];
+
 if (command === '-h' || command === '--help' || command === 'help' || !command) {
     console.log('Social Messenger - WhatsApp & Telegram\n');
     console.log('Usage: node index.js <command>\n');
@@ -12,7 +14,7 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
     console.log('  send-telegram  Send to Telegram groups only');
     console.log('  send-wa-status Post images to your WhatsApp status only');
     console.log('  wa-list        List all your WhatsApp groups');
-    console.log('  clean-images   Delete all images from contents/ folder');
+    console.log('  clean-images   Delete content images (e.jpg, t.jpg, etc.)');
     console.log('  help, -h       Show this help message\n');
     console.log('Examples:');
     console.log('  node index.js send-all');
@@ -21,37 +23,39 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
     process.exit(0);
 }
 
+// Validate command before doing anything else
+if (!validCommands.includes(command)) {
+    console.log(`❌ Unknown command: "${command}"\n`);
+    console.log('Run "node index.js help" to see available commands.');
+    process.exit(1);
+}
+
 // Handle clean-images command without loading dependencies
 if (command === 'clean-images') {
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-    const folder = './contents';
+    const prefixes = ['e', 't'];
 
-    console.log('🗑️  Cleaning up images from contents folder...\n');
+    console.log('🗑️  Cleaning up content images...\n');
 
-    if (!fs.existsSync(folder)) {
-        console.log(`⚠️  Folder not found: ${folder}`);
-    } else {
-        console.log(`📁 ${folder}:`);
-        const files = fs.readdirSync(folder);
-        let deletedCount = 0;
+    let deletedCount = 0;
+    const files = fs.readdirSync('.');
 
-        for (const file of files) {
-            const ext = path.extname(file).toLowerCase();
-            if (imageExtensions.includes(ext)) {
-                const filePath = path.join(folder, file);
-                fs.unlinkSync(filePath);
-                console.log(`   🗑️  Deleted: ${file}`);
-                deletedCount++;
-            }
+    for (const file of files) {
+        const lower = file.toLowerCase();
+        const name = path.parse(lower).name;
+        const ext = path.parse(lower).ext;
+        if (imageExtensions.includes(ext) && prefixes.includes(name)) {
+            fs.unlinkSync(file);
+            console.log(`   🗑️  Deleted: ${file}`);
+            deletedCount++;
         }
-
-        if (deletedCount === 0) {
-            console.log('   No images found');
-        }
-        console.log('');
     }
 
-    console.log('✅ Done!');
+    if (deletedCount === 0) {
+        console.log('   No content images found');
+    }
+
+    console.log('\n✅ Done!');
     process.exit(0);
 }
 
@@ -73,12 +77,12 @@ const CONFIG = {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE',
 
     // Language configurations (ordered - English first, then Tamil)
-    // All content lives in ./contents with prefix-based image naming (e.jpg/e.png, t.jpg/t.png)
+    // Content files live in root directory with prefix-based image naming (e.jpg/e.png, t.jpg/t.png)
     languages: [
         {
             name: 'english',
             groupListFile: './config/groups-english-list.json',
-            folder: './contents',
+            folder: '.',
             messageFile: 'english.txt',
             imagePrefix: 'e',
             telegramGroupListFile: './config/telegram-groups-english-list.json'
@@ -86,7 +90,7 @@ const CONFIG = {
         {
             name: 'tamil',
             groupListFile: './config/groups-tamil-list.json',
-            folder: './contents',
+            folder: '.',
             messageFile: 'tamil.txt',
             imagePrefix: 't',
             telegramGroupListFile: './config/telegram-groups-tamil-list.json'
