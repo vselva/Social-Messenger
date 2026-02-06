@@ -295,14 +295,14 @@ client.on('qr', (qr) => {
     startSpinner('   Waiting for scan');
 });
 
-// When authenticated
-client.on('authenticated', () => {
+// When authenticated (use 'once' to prevent duplicate messages)
+client.once('authenticated', () => {
     stopSpinner('✅ Authenticated successfully!');
     startSpinner('   Loading WhatsApp data');
 });
 
-// When ready
-client.on('ready', async () => {
+// When ready (use 'once' to prevent multiple executions if event fires multiple times)
+client.once('ready', async () => {
     stopSpinner('✅ WhatsApp client is ready!\n');
 
     // Initialize Telegram bot
