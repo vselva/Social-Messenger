@@ -3,23 +3,27 @@ const path = require('path');
 
 // Check for help command and validate commands first (before loading other dependencies)
 const command = process.argv[2];
-const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'wa-list', 'clean-images', 'help', '-h', '--help'];
+const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'wa-list', 'clean-images', 'queue-status', 'help', '-h', '--help'];
 
 if (command === '-h' || command === '--help' || command === 'help' || !command) {
     console.log('Social Messenger - WhatsApp & Telegram\n');
     console.log('Usage: node index.js <command>\n');
     console.log('Commands:');
-    console.log('  send-all       Send to WhatsApp status, groups, and Telegram (deletes images on success)');
+    console.log('  send-all       Send to WhatsApp status, groups, and Telegram (deletes content on success)');
     console.log('  send-wa        Send to WhatsApp groups only');
     console.log('  send-telegram  Send to Telegram groups only');
     console.log('  send-wa-status Post images to your WhatsApp status only');
     console.log('  wa-list        List all your WhatsApp groups');
-    console.log('  clean-images   Delete content images (e.jpg, t.jpg, etc.)');
+    console.log('  queue-status   Show how many messages are queued');
+    console.log('  clean-images   Delete content from queue or root folder');
     console.log('  help, -h       Show this help message\n');
+    console.log('Queue Mode:');
+    console.log('  Create queue/1/, queue/2/, etc. folders with e.jpg, t.jpg, english.txt, tamil.txt');
+    console.log('  send-all will send from the lowest numbered folder and delete it on success\n');
     console.log('Examples:');
     console.log('  node index.js send-all');
     console.log('  node index.js send-telegram');
-    console.log('  node index.js clean-images');
+    console.log('  node index.js queue-status');
     process.exit(0);
 }
 
@@ -30,29 +34,87 @@ if (!validCommands.includes(command)) {
     process.exit(1);
 }
 
-// Handle clean-images command without loading dependencies
-if (command === 'clean-images') {
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-    const prefixes = ['e', 't'];
+// Handle queue-status command without loading dependencies
+if (command === 'queue-status') {
+    const queuePath = './queue';
 
-    console.log('🗑️  Cleaning up content images...\n');
+    console.log('📬 Queue Status\n');
 
-    let deletedCount = 0;
-    const files = fs.readdirSync('.');
+    if (!fs.existsSync(queuePath)) {
+        console.log('   Queue folder does not exist (using root folder mode)');
+        console.log('   To use queue mode, create queue/1/, queue/2/, etc.\n');
+    } else {
+        const entries = fs.readdirSync(queuePath, { withFileTypes: true });
+        const numericFolders = entries
+            .filter(entry => entry.isDirectory() && /^\d+$/.test(entry.name))
+            .map(entry => parseInt(entry.name, 10))
+            .sort((a, b) => a - b);
 
-    for (const file of files) {
-        const lower = file.toLowerCase();
-        const name = path.parse(lower).name;
-        const ext = path.parse(lower).ext;
-        if (imageExtensions.includes(ext) && prefixes.includes(name)) {
-            fs.unlinkSync(file);
-            console.log(`   🗑️  Deleted: ${file}`);
-            deletedCount++;
+        if (numericFolders.length === 0) {
+            console.log('   📭 Queue is empty\n');
+        } else {
+            console.log(`   📬 ${numericFolders.length} message(s) queued\n`);
+            console.log('   Folders: ' + numericFolders.join(', '));
+            console.log(`\n   Next to send: queue/${numericFolders[0]}/\n`);
         }
     }
 
-    if (deletedCount === 0) {
-        console.log('   No content images found');
+    process.exit(0);
+}
+
+// Handle clean-images command without loading dependencies
+if (command === 'clean-images') {
+    const queuePath = './queue';
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const prefixes = ['e', 't'];
+
+    console.log('🗑️  Cleaning up content...\n');
+
+    // Check if queue folder exists
+    if (fs.existsSync(queuePath)) {
+        // Queue mode - delete the lowest numbered folder
+        const entries = fs.readdirSync(queuePath, { withFileTypes: true });
+        const numericFolders = entries
+            .filter(entry => entry.isDirectory() && /^\d+$/.test(entry.name))
+            .map(entry => parseInt(entry.name, 10))
+            .sort((a, b) => a - b);
+
+        if (numericFolders.length === 0) {
+            console.log('   📭 Queue is empty - nothing to clean');
+        } else {
+            const folderToDelete = path.join(queuePath, numericFolders[0].toString());
+            console.log(`   Deleting queue folder: ${folderToDelete}`);
+
+            // Delete all files in the folder
+            const files = fs.readdirSync(folderToDelete);
+            for (const file of files) {
+                fs.unlinkSync(path.join(folderToDelete, file));
+                console.log(`   🗑️  Deleted: ${file}`);
+            }
+
+            // Remove the folder itself
+            fs.rmdirSync(folderToDelete);
+            console.log(`   🗑️  Removed folder: ${numericFolders[0]}/`);
+        }
+    } else {
+        // Fallback mode - delete images from root
+        let deletedCount = 0;
+        const files = fs.readdirSync('.');
+
+        for (const file of files) {
+            const lower = file.toLowerCase();
+            const name = path.parse(lower).name;
+            const ext = path.parse(lower).ext;
+            if (imageExtensions.includes(ext) && prefixes.includes(name)) {
+                fs.unlinkSync(file);
+                console.log(`   🗑️  Deleted: ${file}`);
+                deletedCount++;
+            }
+        }
+
+        if (deletedCount === 0) {
+            console.log('   No content images found in root folder');
+        }
     }
 
     console.log('\n✅ Done!');
@@ -76,13 +138,16 @@ const CONFIG = {
     // Telegram Bot Token (get from @BotFather on Telegram)
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE',
 
+    // Queue folder for multiple messages (optional - falls back to root if not present)
+    queueFolder: './queue',
+
     // Language configurations (ordered - English first, then Tamil)
-    // Content files live in root directory with prefix-based image naming (e.jpg/e.png, t.jpg/t.png)
+    // Content files: e.jpg/e.png for English, t.jpg/t.png for Tamil
+    // Message files: english.txt, tamil.txt
     languages: [
         {
             name: 'english',
             groupListFile: './config/groups-english-list.json',
-            folder: '.',
             messageFile: 'english.txt',
             imagePrefix: 'e',
             telegramGroupListFile: './config/telegram-groups-english-list.json'
@@ -90,7 +155,6 @@ const CONFIG = {
         {
             name: 'tamil',
             groupListFile: './config/groups-tamil-list.json',
-            folder: '.',
             messageFile: 'tamil.txt',
             imagePrefix: 't',
             telegramGroupListFile: './config/telegram-groups-tamil-list.json'
@@ -153,6 +217,72 @@ function getRandomDelay() {
 // Sleep function
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Get content folder (queue mode or fallback to root)
+// Returns: { folder: string|null, isQueue: boolean }
+function getContentFolder() {
+    const queuePath = CONFIG.queueFolder;
+
+    // Check if queue folder exists
+    if (!fs.existsSync(queuePath)) {
+        // No queue folder - use root directory (fallback mode)
+        return { folder: '.', isQueue: false };
+    }
+
+    // Queue folder exists - find lowest numbered subfolder
+    const entries = fs.readdirSync(queuePath, { withFileTypes: true });
+    const numericFolders = entries
+        .filter(entry => entry.isDirectory() && /^\d+$/.test(entry.name))
+        .map(entry => parseInt(entry.name, 10))
+        .sort((a, b) => a - b);
+
+    if (numericFolders.length === 0) {
+        // Queue folder exists but is empty
+        return { folder: null, isQueue: true };
+    }
+
+    // Return the lowest numbered folder
+    const lowestFolder = path.join(queuePath, numericFolders[0].toString());
+    return { folder: lowestFolder, isQueue: true };
+}
+
+// Get queue status (for queue-status command)
+function getQueueStatus() {
+    const queuePath = CONFIG.queueFolder;
+
+    if (!fs.existsSync(queuePath)) {
+        return { exists: false, count: 0, folders: [] };
+    }
+
+    const entries = fs.readdirSync(queuePath, { withFileTypes: true });
+    const numericFolders = entries
+        .filter(entry => entry.isDirectory() && /^\d+$/.test(entry.name))
+        .map(entry => parseInt(entry.name, 10))
+        .sort((a, b) => a - b);
+
+    return {
+        exists: true,
+        count: numericFolders.length,
+        folders: numericFolders
+    };
+}
+
+// Delete a queue folder entirely
+function deleteQueueFolder(folderPath) {
+    if (!fs.existsSync(folderPath)) {
+        return;
+    }
+
+    // Delete all files in the folder first
+    const files = fs.readdirSync(folderPath);
+    for (const file of files) {
+        fs.unlinkSync(path.join(folderPath, file));
+    }
+
+    // Remove the folder itself
+    fs.rmdirSync(folderPath);
+    console.log(`   🗑️  Deleted queue folder: ${path.basename(folderPath)}`);
 }
 
 // Get chats with retry (WhatsApp internal data may not be ready immediately after 'ready' event)
@@ -253,7 +383,8 @@ async function upscaleImageForHD(imagePath) {
 }
 
 // Validate language configuration files
-function validateLanguageConfig(lang, config) {
+// folder: the content folder to check (from getContentFolder())
+function validateLanguageConfig(lang, config, folder) {
     const errors = [];
 
     // Check group list file
@@ -262,17 +393,17 @@ function validateLanguageConfig(lang, config) {
     }
 
     // Check folder exists
-    if (!fs.existsSync(config.folder)) {
-        errors.push(`❌ Folder not found: ${config.folder}`);
+    if (!fs.existsSync(folder)) {
+        errors.push(`❌ Content folder not found: ${folder}`);
     } else {
         // Check for image file by prefix
-        const imagePath = findImageInFolder(config.folder, config.imagePrefix);
+        const imagePath = findImageInFolder(folder, config.imagePrefix);
         if (!imagePath) {
-            errors.push(`❌ No image file found for prefix '${config.imagePrefix}' in: ${config.folder}`);
+            errors.push(`❌ No image file found for prefix '${config.imagePrefix}' in: ${folder}`);
         }
 
         // Check for message file
-        const messagePath = path.join(config.folder, config.messageFile);
+        const messagePath = path.join(folder, config.messageFile);
         if (!fs.existsSync(messagePath)) {
             errors.push(`❌ Message file not found: ${messagePath}`);
         } else {
@@ -314,44 +445,89 @@ client.once('ready', async () => {
     if (command === 'wa-list') {
         await listGroups();
     } else if (command === 'send-all') {
-        let allSuccess = true;
+        // Get content folder (queue mode or fallback)
+        const { folder: contentFolder, isQueue } = getContentFolder();
 
-        // Send to WhatsApp status first
-        const statusSuccess = await sendToStatus();
-        if (!statusSuccess) allSuccess = false;
-
-        // Send to WhatsApp groups
-        const waSuccess = await sendToAllLanguages();
-        if (!waSuccess) allSuccess = false;
-
-        // Also send to Telegram if configured
-        if (telegramReady) {
-            const telegramSuccess = await sendToAllTelegramLanguages();
-            if (!telegramSuccess) allSuccess = false;
-        }
-
-        // Delete images only if all sends were successful
-        if (allSuccess) {
-            console.log('\n🗑️  Cleaning up images from contents folder...');
-            for (const langConfig of CONFIG.languages) {
-                deleteImagesInFolder(langConfig.folder, langConfig.imagePrefix);
-            }
-            console.log('✅ All images deleted successfully!');
+        if (contentFolder === null) {
+            console.log('📭 Queue folder is empty - no messages to send.');
         } else {
-            console.log('\n⚠️  Some sends failed - images NOT deleted');
+            if (isQueue) {
+                console.log(`📬 Queue mode: Sending from ${contentFolder}\n`);
+            }
+
+            let allSuccess = true;
+
+            // Send to WhatsApp status first
+            const statusSuccess = await sendToStatus(contentFolder);
+            if (!statusSuccess) allSuccess = false;
+
+            // Send to WhatsApp groups
+            const waSuccess = await sendToAllLanguages(contentFolder);
+            if (!waSuccess) allSuccess = false;
+
+            // Also send to Telegram if configured
+            if (telegramReady) {
+                const telegramSuccess = await sendToAllTelegramLanguages(contentFolder);
+                if (!telegramSuccess) allSuccess = false;
+            }
+
+            // Cleanup on success
+            if (allSuccess) {
+                if (isQueue) {
+                    console.log('\n🗑️  Cleaning up queue folder...');
+                    deleteQueueFolder(contentFolder);
+                } else {
+                    console.log('\n🗑️  Cleaning up images...');
+                    for (const langConfig of CONFIG.languages) {
+                        deleteImagesInFolder(contentFolder, langConfig.imagePrefix);
+                    }
+                }
+                console.log('✅ Cleanup complete!');
+            } else {
+                console.log('\n⚠️  Some sends failed - content NOT deleted');
+            }
         }
     } else if (command === 'send-wa') {
-        // Send to WhatsApp groups only
-        await sendToAllLanguages();
-    } else if (command === 'send-telegram') {
-        // Send to Telegram only
-        if (telegramReady) {
-            await sendToAllTelegramLanguages();
+        // Get content folder (queue mode or fallback)
+        const { folder: contentFolder, isQueue } = getContentFolder();
+
+        if (contentFolder === null) {
+            console.log('📭 Queue folder is empty - no messages to send.');
         } else {
-            console.log('❌ Telegram bot not configured. Set TELEGRAM_BOT_TOKEN environment variable.');
+            if (isQueue) {
+                console.log(`📬 Queue mode: Sending from ${contentFolder}\n`);
+            }
+            // Send to WhatsApp groups only (no cleanup - use send-all for that)
+            await sendToAllLanguages(contentFolder);
+        }
+    } else if (command === 'send-telegram') {
+        // Get content folder (queue mode or fallback)
+        const { folder: contentFolder, isQueue } = getContentFolder();
+
+        if (contentFolder === null) {
+            console.log('📭 Queue folder is empty - no messages to send.');
+        } else {
+            if (isQueue) {
+                console.log(`📬 Queue mode: Sending from ${contentFolder}\n`);
+            }
+            if (telegramReady) {
+                await sendToAllTelegramLanguages(contentFolder);
+            } else {
+                console.log('❌ Telegram bot not configured. Set TELEGRAM_BOT_TOKEN environment variable.');
+            }
         }
     } else if (command === 'send-wa-status') {
-        await sendToStatus();
+        // Get content folder (queue mode or fallback)
+        const { folder: contentFolder, isQueue } = getContentFolder();
+
+        if (contentFolder === null) {
+            console.log('📭 Queue folder is empty - no messages to send.');
+        } else {
+            if (isQueue) {
+                console.log(`📬 Queue mode: Sending from ${contentFolder}\n`);
+            }
+            await sendToStatus(contentFolder);
+        }
     } else {
         console.log('Usage:');
         console.log('  node index.js send-all       - Send to WhatsApp status, groups, and Telegram');
@@ -359,6 +535,7 @@ client.once('ready', async () => {
         console.log('  node index.js send-telegram  - Send to Telegram groups only');
         console.log('  node index.js send-wa-status - Post images to your WhatsApp status');
         console.log('  node index.js wa-list        - List all your WhatsApp groups');
+        console.log('  node index.js queue-status   - Show queued message count');
     }
 
     // Keep running for a bit then exit
@@ -397,7 +574,7 @@ async function listGroups() {
 }
 
 // Send images to WhatsApp Status
-async function sendToStatus() {
+async function sendToStatus(contentFolder) {
     console.log('📸 Posting images to WhatsApp Status...\n');
     console.log('🔍 Validating configurations...\n');
 
@@ -406,7 +583,7 @@ async function sendToStatus() {
     // Validate all language configurations
     for (const langConfig of CONFIG.languages) {
         console.log(`Checking ${langConfig.name.toUpperCase()} configuration:`);
-        const errors = validateLanguageConfig(langConfig.name, langConfig);
+        const errors = validateLanguageConfig(langConfig.name, langConfig, contentFolder);
 
         if (errors.length > 0) {
             hasErrors = true;
@@ -434,7 +611,7 @@ async function sendToStatus() {
         console.log('═'.repeat(60));
 
         // Find image file by prefix
-        const imagePath = findImageInFolder(langConfig.folder, langConfig.imagePrefix);
+        const imagePath = findImageInFolder(contentFolder, langConfig.imagePrefix);
 
         try {
             console.log(`📷 Image: ${path.basename(imagePath)}`);
@@ -474,7 +651,7 @@ async function sendToStatus() {
 }
 
 // Send to all language groups
-async function sendToAllLanguages() {
+async function sendToAllLanguages(contentFolder) {
     console.log('🔍 Validating configurations...\n');
 
     let hasErrors = false;
@@ -483,7 +660,7 @@ async function sendToAllLanguages() {
     // Validate all language configurations
     for (const langConfig of CONFIG.languages) {
         console.log(`Checking ${langConfig.name.toUpperCase()} configuration:`);
-        const errors = validateLanguageConfig(langConfig.name, langConfig);
+        const errors = validateLanguageConfig(langConfig.name, langConfig, contentFolder);
 
         if (errors.length > 0) {
             hasErrors = true;
@@ -512,7 +689,7 @@ async function sendToAllLanguages() {
         console.log(`📨 Sending ${langConfig.name.toUpperCase()} messages`);
         console.log('═'.repeat(60));
 
-        const success = await sendToLanguageGroups(langConfig.name, langConfig);
+        const success = await sendToLanguageGroups(langConfig.name, langConfig, contentFolder);
         if (!success) allSuccess = false;
         console.log('');
     }
@@ -522,12 +699,12 @@ async function sendToAllLanguages() {
 }
 
 // Send to groups for a specific language (sends directly by group ID from config)
-async function sendToLanguageGroups(lang, config) {
+async function sendToLanguageGroups(lang, config, contentFolder) {
     // Load group list for this language
     const groupList = JSON.parse(fs.readFileSync(config.groupListFile, 'utf8'));
 
     // Find image file by prefix and upscale for HD quality
-    const imagePath = findImageInFolder(config.folder, config.imagePrefix);
+    const imagePath = findImageInFolder(contentFolder, config.imagePrefix);
     console.log(`\n📷 Image: ${path.basename(imagePath)}`);
 
     // Upscale image for HD quality
@@ -535,7 +712,7 @@ async function sendToLanguageGroups(lang, config) {
     const media = MessageMedia.fromFilePath(hdImagePath);
 
     // Read message text
-    const messagePath = path.join(config.folder, config.messageFile);
+    const messagePath = path.join(contentFolder, config.messageFile);
     const messageText = fs.readFileSync(messagePath, 'utf8').trim();
 
     console.log(`\n📝 Message preview:`);
@@ -597,7 +774,8 @@ function convertWhatsAppToTelegram(text) {
 }
 
 // Validate Telegram configuration for a language
-function validateTelegramConfig(lang, config) {
+// folder: the content folder to check (from getContentFolder())
+function validateTelegramConfig(lang, config, folder) {
     const errors = [];
 
     // Check telegram group list file
@@ -612,17 +790,17 @@ function validateTelegramConfig(lang, config) {
     }
 
     // Check folder exists (same as WhatsApp - shares content)
-    if (!fs.existsSync(config.folder)) {
-        errors.push(`❌ Folder not found: ${config.folder}`);
+    if (!fs.existsSync(folder)) {
+        errors.push(`❌ Content folder not found: ${folder}`);
     } else {
         // Check for image file by prefix
-        const imagePath = findImageInFolder(config.folder, config.imagePrefix);
+        const imagePath = findImageInFolder(folder, config.imagePrefix);
         if (!imagePath) {
-            errors.push(`❌ No image file found for prefix '${config.imagePrefix}' in: ${config.folder}`);
+            errors.push(`❌ No image file found for prefix '${config.imagePrefix}' in: ${folder}`);
         }
 
         // Check for message file
-        const messagePath = path.join(config.folder, config.messageFile);
+        const messagePath = path.join(folder, config.messageFile);
         if (!fs.existsSync(messagePath)) {
             errors.push(`❌ Message file not found: ${messagePath}`);
         } else {
@@ -637,7 +815,7 @@ function validateTelegramConfig(lang, config) {
 }
 
 // Send to all Telegram groups for all languages
-async function sendToAllTelegramLanguages() {
+async function sendToAllTelegramLanguages(contentFolder) {
     console.log('\n📱 TELEGRAM MESSAGING\n');
     console.log('🔍 Validating Telegram configurations...\n');
 
@@ -651,7 +829,7 @@ async function sendToAllTelegramLanguages() {
         }
 
         console.log(`Checking ${langConfig.name.toUpperCase()} Telegram configuration:`);
-        const errors = validateTelegramConfig(langConfig.name, langConfig);
+        const errors = validateTelegramConfig(langConfig.name, langConfig, contentFolder);
 
         if (errors.length > 0) {
             hasErrors = true;
@@ -682,7 +860,7 @@ async function sendToAllTelegramLanguages() {
         console.log(`📨 Sending ${langConfig.name.toUpperCase()} Telegram messages`);
         console.log('═'.repeat(60));
 
-        const success = await sendToTelegramGroups(langConfig.name, langConfig);
+        const success = await sendToTelegramGroups(langConfig.name, langConfig, contentFolder);
         if (!success) allSuccess = false;
         console.log('');
     }
@@ -692,7 +870,7 @@ async function sendToAllTelegramLanguages() {
 }
 
 // Send to Telegram groups for a specific language
-async function sendToTelegramGroups(lang, config) {
+async function sendToTelegramGroups(lang, config, contentFolder) {
     // Load Telegram group list for this language
     const groupList = JSON.parse(fs.readFileSync(config.telegramGroupListFile, 'utf8'));
 
@@ -702,11 +880,11 @@ async function sendToTelegramGroups(lang, config) {
     }
 
     // Find image file by prefix
-    const imagePath = findImageInFolder(config.folder, config.imagePrefix);
+    const imagePath = findImageInFolder(contentFolder, config.imagePrefix);
     console.log(`\n📷 Image: ${path.basename(imagePath)}`);
 
     // Read message text
-    const messagePath = path.join(config.folder, config.messageFile);
+    const messagePath = path.join(contentFolder, config.messageFile);
     const messageText = fs.readFileSync(messagePath, 'utf8').trim();
 
     console.log(`\n📝 Message preview:`);
@@ -772,12 +950,25 @@ client.on('disconnected', (reason) => {
 if (command === 'send-telegram') {
     (async () => {
         console.log('📱 TELEGRAM ONLY MODE\n');
-        const telegramReady = initTelegramBot();
-        if (telegramReady) {
-            await sendToAllTelegramLanguages();
+
+        // Get content folder (queue mode or fallback)
+        const { folder: contentFolder, isQueue } = getContentFolder();
+
+        if (contentFolder === null) {
+            console.log('📭 Queue folder is empty - no messages to send.');
         } else {
-            console.log('❌ Telegram bot not configured. Set TELEGRAM_BOT_TOKEN in .env file.');
+            if (isQueue) {
+                console.log(`📬 Queue mode: Sending from ${contentFolder}\n`);
+            }
+
+            const telegramReady = initTelegramBot();
+            if (telegramReady) {
+                await sendToAllTelegramLanguages(contentFolder);
+            } else {
+                console.log('❌ Telegram bot not configured. Set TELEGRAM_BOT_TOKEN in .env file.');
+            }
         }
+
         console.log('\n👋 Done! Exiting...');
         process.exit(0);
     })();
