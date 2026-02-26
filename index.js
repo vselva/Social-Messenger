@@ -481,6 +481,14 @@ client.once('ready', async () => {
                     for (const langConfig of CONFIG.languages) {
                         deleteImagesInFolder(contentFolder, langConfig.imagePrefix);
                     }
+                    console.log('🗑️  Clearing text files...');
+                    for (const langConfig of CONFIG.languages) {
+                        const txtPath = path.join(contentFolder, langConfig.messageFile);
+                        if (fs.existsSync(txtPath)) {
+                            fs.writeFileSync(txtPath, '');
+                            console.log(`   🗑️  Cleared: ${langConfig.messageFile}`);
+                        }
+                    }
                 }
                 console.log('✅ Cleanup complete!');
             } else {
