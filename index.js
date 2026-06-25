@@ -557,28 +557,50 @@ client.once('ready', async () => {
 async function listGroups() {
     console.log('📋 Fetching your groups...\n');
 
+    // Collect all IDs already in config files
+    const configuredIds = new Set();
+    for (const langConfig of CONFIG.languages) {
+        if (fs.existsSync(langConfig.groupListFile)) {
+            const entries = JSON.parse(fs.readFileSync(langConfig.groupListFile, 'utf8'));
+            entries.forEach(e => configuredIds.add(e.id));
+        }
+    }
+
     const chats = await getChatsWithRetry();
     const groups = chats.filter(chat => chat.isGroup);
 
-    console.log(`Found ${groups.length} groups:\n`);
+    const newGroups = groups.filter(g => !configuredIds.has(g.id._serialized));
+
+    console.log(`Found ${groups.length} groups (${newGroups.length} not in any config):\n`);
     console.log('─'.repeat(60));
 
     groups.forEach((group, index) => {
-        console.log(`${index + 1}. ${group.name}`);
+        const isNew = !configuredIds.has(group.id._serialized);
+        const tag = isNew ? '  *** NEW ***' : '';
+        console.log(`${index + 1}.${tag} ${group.name}`);
         console.log(`   ID: ${group.id._serialized}`);
         console.log('');
     });
 
     console.log('─'.repeat(60));
-    console.log('\n💡 Add groups to groups-tamil-list.json and groups-english-list.json');
+
+    if (newGroups.length > 0) {
+        console.log(`\n✨ ${newGroups.length} group(s) not yet in any config:\n`);
+        newGroups.forEach(g => {
+            console.log(`   Name: ${g.name}`);
+            console.log(`   ID:   ${g.id._serialized}`);
+            console.log('');
+        });
+    }
 
     // Save to file for reference
     const groupList = groups.map(g => ({
         name: g.name,
-        id: g.id._serialized
+        id: g.id._serialized,
+        inConfig: configuredIds.has(g.id._serialized)
     }));
     fs.writeFileSync('./config/groups-list.json', JSON.stringify(groupList, null, 2));
-    console.log('📁 Group list also saved to config/groups-list.json');
+    console.log('📁 Full group list saved to config/groups-list.json');
 }
 
 // Send images to WhatsApp Status
