@@ -127,6 +127,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const TelegramBot = require('node-telegram-bot-api');
 const qrcode = require('qrcode-terminal');
 const sharp = require('sharp');
+const WA_JS_PATH = path.join(__dirname, 'node_modules/@wppconnect/wa-js/dist/wppconnect-wa.js');
 
 // ============== CONFIGURATION ==============
 const CONFIG = {
@@ -163,11 +164,17 @@ const CONFIG = {
 };
 
 // ============== MAIN CODE ==============
+// WPP must be injected before WhatsApp Web loads so it can hook the module loader
+const wppCode = fs.readFileSync(WA_JS_PATH, 'utf8');
+
 const client = new Client({
     authStrategy: new LocalAuth(),
+    bypassCSP: true,
+    evalOnNewDoc: wppCode,
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        protocolTimeout: 180000
     }
 });
 
@@ -185,7 +192,9 @@ function initTelegramBot() {
 
 // Loading spinner for initialization
 let spinnerInterval = null;
+const isTTY = process.stdout.isTTY;
 function startSpinner(message) {
+    if (!isTTY) return;
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let i = 0;
     process.stdout.write(`${message} ${frames[0]}`);
@@ -201,11 +210,15 @@ function stopSpinner(successMessage) {
     if (spinnerInterval) {
         clearInterval(spinnerInterval);
         spinnerInterval = null;
-        process.stdout.clearLine(0);
-        process.stdout.cursorTo(0);
+        if (isTTY) {
+            process.stdout.clearLine(0);
+            process.stdout.cursorTo(0);
+        }
         if (successMessage) {
             console.log(successMessage);
         }
+    } else if (successMessage) {
+        console.log(successMessage);
     }
 }
 
@@ -436,6 +449,11 @@ client.once('authenticated', () => {
 client.once('ready', async () => {
     stopSpinner('✅ WhatsApp client is ready!\n');
 
+    // Verify WPP loaded (injected via evalOnNewDoc before WhatsApp Web)
+    const wppReady = await client.pupPage.evaluate(() => !!(window.WPP && window.WPP.status));
+    if (!wppReady) throw new Error('WA-JS failed to initialize — was not injected before page load');
+    console.log('✅ WA-JS ready!\n');
+
     // Initialize Telegram bot
     const telegramReady = initTelegramBot();
 
@@ -603,7 +621,7 @@ async function listGroups() {
     console.log('📁 Full group list saved to config/groups-list.json');
 }
 
-// Send images to WhatsApp Status
+// Send images to WhatsApp Status using WPP.status.sendImageStatus (wppconnect/wa-js)
 async function sendToStatus(contentFolder) {
     console.log('📸 Posting images to WhatsApp Status...\n');
     console.log('🔍 Validating configurations...\n');
@@ -634,13 +652,12 @@ async function sendToStatus(contentFolder) {
 
     let allSuccess = true;
 
-    // Post each language status (English first, then Tamil)
-    for (const langConfig of CONFIG.languages) {
+    // Post each language status (Tamil first, then English)
+    for (const langConfig of [...CONFIG.languages].reverse()) {
         console.log('═'.repeat(60));
         console.log(`📨 Posting ${langConfig.name.toUpperCase()} status`);
         console.log('═'.repeat(60));
 
-        // Find image file by prefix
         const imagePath = findImageInFolder(contentFolder, langConfig.imagePrefix);
 
         try {
@@ -649,13 +666,33 @@ async function sendToStatus(contentFolder) {
             // Upscale image for HD quality
             const hdImagePath = await upscaleImageForHD(imagePath);
 
-            // Create media from upscaled file
-            const media = MessageMedia.fromFilePath(hdImagePath);
+            // Read image as base64 data URL for WPP.status.sendImageStatus
+            const imageBuffer = fs.readFileSync(hdImagePath);
+            const ext = path.extname(hdImagePath).toLowerCase();
+            const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
+            const base64DataUrl = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
 
-            console.log(`📝 Posting image to status...`);
+            console.log(`📝 Posting image to status via WPP...`);
 
-            // Send to status (sendSeen: false to avoid markedUnread bug)
-            await client.sendMessage('status@broadcast', media, { sendSeen: false });
+            // Fire WPP without awaiting — WPP posts status immediately but its Promise
+            // may never resolve (WhatsApp internal ACK can hang indefinitely)
+            await client.pupPage.evaluate((dataUrl) => {
+                window.__wppStatusResult = { done: false, error: null };
+                WPP.status.sendImageStatus(dataUrl)
+                    .then(() => { window.__wppStatusResult = { done: true, error: null }; })
+                    .catch((e) => { window.__wppStatusResult = { done: true, error: e.message || String(e) }; });
+            }, base64DataUrl);
+
+            // Poll up to 60s; if no signal by then the status was already posted
+            const deadline = Date.now() + 60000;
+            while (Date.now() < deadline) {
+                const result = await client.pupPage.evaluate(() => window.__wppStatusResult);
+                if (result && result.done) {
+                    if (result.error) throw new Error(result.error);
+                    break;
+                }
+                await sleep(3000);
+            }
 
             console.log(`✅ ${langConfig.name.toUpperCase()} status posted successfully!\n`);
 
