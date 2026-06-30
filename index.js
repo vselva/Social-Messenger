@@ -317,6 +317,8 @@ async function getChatsWithRetry(maxRetries = 5, delayMs = 3000) {
 }
 
 // Find image file in a folder by prefix (e.g., prefix 'e' matches e.jpg, e.png, e.jpeg, e.webp)
+// Fallback: matches pattern like 88E-PER.jpg where part before '-' ends with the prefix letter (E/T)
+// On fallback match, renames the file to the standard name (e.jpg / t.jpg) before returning.
 function findImageInFolder(folder, prefix) {
     if (!fs.existsSync(folder)) {
         return null;
@@ -324,6 +326,8 @@ function findImageInFolder(folder, prefix) {
 
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
     const files = fs.readdirSync(folder);
+
+    // Primary: exact prefix match (e.jpg, t.jpg, etc.)
     const imageFile = files.find(file => {
         const lower = file.toLowerCase();
         const name = path.parse(lower).name;
@@ -334,6 +338,28 @@ function findImageInFolder(folder, prefix) {
     if (imageFile) {
         return path.join(folder, imageFile);
     }
+
+    // Fallback: pattern where filename before '-' ends with the prefix letter (case-insensitive)
+    // e.g. 88E-PER.jpg → English (prefix 'e'), 88T-PER.jpg → Tamil (prefix 't')
+    const fallbackFile = files.find(file => {
+        const lower = file.toLowerCase();
+        const { name, ext } = path.parse(lower);
+        if (!imageExtensions.includes(ext)) return false;
+        const hyphenIdx = name.indexOf('-');
+        if (hyphenIdx === -1) return false;
+        return name.slice(0, hyphenIdx).endsWith(prefix);
+    });
+
+    if (fallbackFile) {
+        const ext = path.extname(fallbackFile).toLowerCase() || '.jpg';
+        const newName = prefix + ext;
+        const oldPath = path.join(folder, fallbackFile);
+        const newPath = path.join(folder, newName);
+        fs.renameSync(oldPath, newPath);
+        console.log(`   🔄 Renamed ${fallbackFile} → ${newName}`);
+        return newPath;
+    }
+
     return null;
 }
 
