@@ -1069,5 +1069,10 @@ if (command === 'send-telegram') {
     // Start WhatsApp client for other commands
     console.log('🚀 Starting WhatsApp client...\n');
     startSpinner('   Connecting to WhatsApp Web');
-    client.initialize();
+    client.initialize().catch((error) => {
+        stopSpinner();
+        console.log('❌ Failed to connect to WhatsApp Web:', error.message || error);
+        console.log('   If this persists, try clearing the .wwebjs_auth/session folder and re-scanning the QR code.');
+        process.exit(1);
+    });
 }
