@@ -436,6 +436,12 @@ node index.js send-telegram
 # Post images to your WhatsApp Status only
 node index.js send-wa-status
 
+# Send personalized renewal reminders from tp.csv (TP Number, Name, Phone Number, Subscription End Date)
+node index.js send-tp-reminders
+
+# Preview reminders without sending anything
+node index.js send-tp-reminders --dry-run
+
 # List all your WhatsApp groups
 node index.js wa-list
 

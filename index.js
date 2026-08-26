@@ -1,28 +1,39 @@
 const fs = require('fs');
 const path = require('path');
 
+// TP renewal reminders (send-tp-reminders command). Kept separate from CONFIG below so
+// it can be validated before the WhatsApp client ever starts connecting.
+const TP_REMINDER_CONFIG = {
+    file: './tp.csv',
+    templateFile: './config/tp-reminder-template.txt',
+    countryCode: '91' // Prepended to 10-digit numbers that lack a country code
+};
+
 // Check for help command and validate commands first (before loading other dependencies)
 const command = process.argv[2];
-const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'wa-list', 'clean-images', 'queue-status', 'help', '-h', '--help'];
+const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'send-tp-reminders', 'wa-list', 'wa-find', 'clean-images', 'queue-status', 'help', '-h', '--help'];
 
 if (command === '-h' || command === '--help' || command === 'help' || !command) {
     console.log('Social Messenger - WhatsApp & Telegram\n');
     console.log('Usage: node index.js <command>\n');
     console.log('Commands:');
-    console.log('  send-all       Send to WhatsApp status, groups, and Telegram (deletes content on success)');
-    console.log('  send-wa        Send to WhatsApp groups only');
-    console.log('  send-telegram  Send to Telegram groups only');
-    console.log('  send-wa-status Post images to your WhatsApp status only');
-    console.log('  wa-list        List all your WhatsApp groups');
-    console.log('  queue-status   Show how many messages are queued');
-    console.log('  clean-images   Delete content from queue or root folder');
-    console.log('  help, -h       Show this help message\n');
+    console.log('  send-all             Send to WhatsApp status, groups, and Telegram (deletes content on success)');
+    console.log('  send-wa              Send to WhatsApp groups only');
+    console.log('  send-telegram        Send to Telegram groups only');
+    console.log('  send-wa-status       Post images to your WhatsApp status only');
+    console.log('  send-tp-reminders    Send personalized renewal reminders from tp.csv (add --dry-run to preview)');
+    console.log('  wa-list              List all your WhatsApp groups');
+    console.log('  wa-find <link>       Look up a group ID from its invite link (works even if wa-list misses it)');
+    console.log('  queue-status         Show how many messages are queued');
+    console.log('  clean-images         Delete content from queue or root folder');
+    console.log('  help, -h             Show this help message\n');
     console.log('Queue Mode:');
     console.log('  Create queue/1/, queue/2/, etc. folders with e.jpg, t.jpg, english.txt, tamil.txt');
     console.log('  send-all will send from the lowest numbered folder and delete it on success\n');
     console.log('Examples:');
     console.log('  node index.js send-all');
     console.log('  node index.js send-telegram');
+    console.log('  node index.js send-tp-reminders --dry-run');
     console.log('  node index.js queue-status');
     process.exit(0);
 }
@@ -488,6 +499,8 @@ client.once('ready', async () => {
 
     if (command === 'wa-list') {
         await listGroups();
+    } else if (command === 'wa-find') {
+        await findGroupByInvite(process.argv[3]);
     } else if (command === 'send-all') {
         // Get content folder (queue mode or fallback)
         const { folder: contentFolder, isQueue } = getContentFolder();
@@ -580,14 +593,18 @@ client.once('ready', async () => {
             }
             await sendToStatus(contentFolder);
         }
+    } else if (command === 'send-tp-reminders') {
+        const dryRun = process.argv[3] === '--dry-run';
+        await sendTpReminders(dryRun);
     } else {
         console.log('Usage:');
-        console.log('  node index.js send-all       - Send to WhatsApp status, groups, and Telegram');
-        console.log('  node index.js send-wa        - Send to WhatsApp groups only');
-        console.log('  node index.js send-telegram  - Send to Telegram groups only');
-        console.log('  node index.js send-wa-status - Post images to your WhatsApp status');
-        console.log('  node index.js wa-list        - List all your WhatsApp groups');
-        console.log('  node index.js queue-status   - Show queued message count');
+        console.log('  node index.js send-all             - Send to WhatsApp status, groups, and Telegram');
+        console.log('  node index.js send-wa              - Send to WhatsApp groups only');
+        console.log('  node index.js send-telegram        - Send to Telegram groups only');
+        console.log('  node index.js send-wa-status       - Post images to your WhatsApp status');
+        console.log('  node index.js send-tp-reminders    - Send renewal reminders from tp.csv (add --dry-run to preview)');
+        console.log('  node index.js wa-list              - List all your WhatsApp groups');
+        console.log('  node index.js queue-status         - Show queued message count');
     }
 
     // Keep running for a bit then exit
@@ -647,6 +664,28 @@ async function listGroups() {
     console.log('📁 Full group list saved to config/groups-list.json');
 }
 
+// Resolve a group's ID from its invite link/code, even if it hasn't synced into wa-list yet
+async function findGroupByInvite(linkOrCode) {
+    if (!linkOrCode) {
+        console.log('❌ Usage: node index.js wa-find <invite-link-or-code>');
+        console.log('   Get the link from: Group info > Invite to group via link');
+        return;
+    }
+
+    const inviteCode = linkOrCode.trim().replace(/^https?:\/\/chat\.whatsapp\.com\//, '').replace(/\/$/, '');
+
+    console.log(`🔍 Looking up group for invite code: ${inviteCode}\n`);
+    try {
+        const info = await client.getInviteInfo(inviteCode);
+        console.log(`✅ Name: ${info.subject}`);
+        console.log(`   ID:   ${info.id._serialized}`);
+        console.log(`   Members: ${info.size}`);
+    } catch (error) {
+        console.log('❌ Could not resolve invite:', error.message || error);
+        console.log('   Make sure the link is current (invite links can be reset/expired).');
+    }
+}
+
 // Send images to WhatsApp Status using WPP.status.sendImageStatus (wppconnect/wa-js)
 async function sendToStatus(contentFolder) {
     console.log('📸 Posting images to WhatsApp Status...\n');
@@ -700,6 +739,13 @@ async function sendToStatus(contentFolder) {
 
             console.log(`📝 Posting image to status via WPP...`);
 
+            // Baseline status message count, so we can verify the post actually
+            // landed even if WPP's own promise never resolves (see below).
+            const baselineCount = await client.pupPage.evaluate(async () => {
+                const status = await WPP.status.getMyStatus();
+                return status.getAllMsgs().length;
+            });
+
             // Fire WPP without awaiting — WPP posts status immediately but its Promise
             // may never resolve (WhatsApp internal ACK can hang indefinitely)
             await client.pupPage.evaluate((dataUrl) => {
@@ -709,15 +755,34 @@ async function sendToStatus(contentFolder) {
                     .catch((e) => { window.__wppStatusResult = { done: true, error: e.message || String(e) }; });
             }, base64DataUrl);
 
-            // Poll up to 60s; if no signal by then the status was already posted
+            // Poll up to 60s for either WPP's own done/error signal, or the status
+            // message count actually increasing (covers the promise-hang case).
+            // A timeout with neither signal means we do NOT know it posted — it
+            // must not be reported as success.
             const deadline = Date.now() + 60000;
+            let confirmed = false;
             while (Date.now() < deadline) {
                 const result = await client.pupPage.evaluate(() => window.__wppStatusResult);
                 if (result && result.done) {
                     if (result.error) throw new Error(result.error);
+                    confirmed = true;
                     break;
                 }
+
+                const currentCount = await client.pupPage.evaluate(async () => {
+                    const status = await WPP.status.getMyStatus();
+                    return status.getAllMsgs().length;
+                });
+                if (currentCount > baselineCount) {
+                    confirmed = true;
+                    break;
+                }
+
                 await sleep(3000);
+            }
+
+            if (!confirmed) {
+                throw new Error('Timed out waiting for status to post — no confirmation received after 60s');
             }
 
             console.log(`✅ ${langConfig.name.toUpperCase()} status posted successfully!\n`);
@@ -1028,6 +1093,211 @@ async function sendToTelegramGroups(lang, config, contentFolder) {
     return successCount === groupList.length;
 }
 
+// ============== TP RENEWAL REMINDER FUNCTIONS ==============
+
+// Minimal RFC4180-ish CSV parser (handles quoted fields, embedded commas/newlines, "" escapes)
+function parseCsv(content) {
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < content.length; i++) {
+        const char = content[i];
+
+        if (inQuotes) {
+            if (char === '"') {
+                if (content[i + 1] === '"') {
+                    field += '"';
+                    i++;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                field += char;
+            }
+        } else if (char === '"') {
+            inQuotes = true;
+        } else if (char === ',') {
+            row.push(field);
+            field = '';
+        } else if (char === '\r') {
+            // ignore - \n (or end of content) closes the row
+        } else if (char === '\n') {
+            row.push(field);
+            rows.push(row);
+            row = [];
+            field = '';
+        } else {
+            field += char;
+        }
+    }
+
+    if (field.length > 0 || row.length > 0) {
+        row.push(field);
+        rows.push(row);
+    }
+
+    return rows;
+}
+
+// Parse CSV content into an array of {header: value} records, skipping blank lines
+function parseCsvRecords(content) {
+    const withoutBom = content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content;
+    const rows = parseCsv(withoutBom).filter(r => r.some(cell => cell.trim() !== ''));
+
+    if (rows.length === 0) return [];
+
+    const headers = rows[0].map(h => h.trim());
+    return rows.slice(1).map(r => {
+        const record = {};
+        headers.forEach((h, idx) => { record[h] = (r[idx] || '').trim(); });
+        return record;
+    });
+}
+
+// Normalize a raw phone number string into WhatsApp's <countrycode><number> digit format, or null if unparseable
+function normalizePhoneNumber(raw, defaultCountryCode) {
+    let digits = (raw || '').replace(/\D/g, '');
+    if (!digits) return null;
+
+    if (digits.length === 10) {
+        digits = defaultCountryCode + digits;
+    } else if (digits.length === 11 && digits.startsWith('0')) {
+        digits = defaultCountryCode + digits.slice(1);
+    }
+
+    if (digits.length < 11 || digits.length > 15) return null;
+    return digits;
+}
+
+// Replace {{key}} placeholders in a template with values from data
+function renderTemplate(template, data) {
+    return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key) => {
+        return data[key] !== undefined ? data[key] : match;
+    });
+}
+
+// Validate tp.csv + the reminder template WITHOUT touching the WhatsApp client, so
+// bad data can be caught before we ever fire off a login/connection attempt.
+// Returns { ok: true, records, template } or { ok: false }.
+function validateTpReminderData() {
+    if (!fs.existsSync(TP_REMINDER_CONFIG.file)) {
+        console.log(`❌ CSV file not found: ${TP_REMINDER_CONFIG.file}`);
+        return { ok: false };
+    }
+    if (!fs.existsSync(TP_REMINDER_CONFIG.templateFile)) {
+        console.log(`❌ Template file not found: ${TP_REMINDER_CONFIG.templateFile}`);
+        return { ok: false };
+    }
+
+    const csvContent = fs.readFileSync(TP_REMINDER_CONFIG.file, 'utf8');
+    const records = parseCsvRecords(csvContent);
+
+    if (records.length === 0) {
+        console.log(`❌ No rows found in CSV: ${TP_REMINDER_CONFIG.file}`);
+        return { ok: false };
+    }
+
+    const requiredColumns = ['TP Number', 'Name', 'Phone Number', 'Subscription End Date'];
+    const missingColumns = requiredColumns.filter(col => !(col in records[0]));
+    if (missingColumns.length > 0) {
+        console.log(`❌ CSV is missing required column(s): ${missingColumns.join(', ')}`);
+        return { ok: false };
+    }
+
+    const template = fs.readFileSync(TP_REMINDER_CONFIG.templateFile, 'utf8');
+
+    // The template is static across records, so checking it once against the first
+    // row is equivalent to checking every row.
+    const sampleMessage = renderTemplate(template, {
+        name: records[0]['Name'] || '',
+        tp: records[0]['TP Number'] || '',
+        end_date: records[0]['Subscription End Date'] || ''
+    }).trim();
+    if (/\{\{|\[FILL IN/.test(sampleMessage)) {
+        console.log(`❌ Template still has unfilled placeholders — edit ${TP_REMINDER_CONFIG.templateFile} before sending.`);
+        return { ok: false };
+    }
+
+    const unparsablePhones = records.filter(r => !normalizePhoneNumber(r['Phone Number'], TP_REMINDER_CONFIG.countryCode)).length;
+    if (unparsablePhones > 0) {
+        console.log(`⚠️  ${unparsablePhones}/${records.length} row(s) have a phone number that could not be parsed — they will be skipped.`);
+    }
+
+    return { ok: true, records, template };
+}
+
+// Send personalized WhatsApp renewal reminders from TP_REMINDER_CONFIG.file (a CSV with
+// TP Number, Name, Phone Number, Subscription End Date columns)
+async function sendTpReminders(dryRun) {
+    console.log(dryRun ? '🔍 DRY RUN — no messages will be sent\n' : '📤 Sending TP renewal reminders...\n');
+
+    const validation = validateTpReminderData();
+    if (!validation.ok) return false;
+    const { records, template } = validation;
+
+    console.log(`📇 Found ${records.length} recipient(s) in ${TP_REMINDER_CONFIG.file}\n`);
+
+    let successCount = 0;
+    let skipCount = 0;
+
+    for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const name = record['Name'] || '(no name)';
+        const rawPhone = record['Phone Number'] || '';
+
+        const message = renderTemplate(template, {
+            name,
+            tp: record['TP Number'] || '',
+            end_date: record['Subscription End Date'] || ''
+        }).trim();
+
+        console.log(`[${i + 1}/${records.length}] ${name} (${rawPhone})`);
+
+        const digits = normalizePhoneNumber(rawPhone, TP_REMINDER_CONFIG.countryCode);
+        if (!digits) {
+            console.log(`   ⚠️  Skipped — could not parse phone number "${rawPhone}"`);
+            skipCount++;
+            continue;
+        }
+
+        if (dryRun) {
+            console.log('   📝 Message preview:');
+            console.log('   ' + '─'.repeat(40));
+            message.split('\n').forEach(line => console.log('   ' + line));
+            console.log('   ' + '─'.repeat(40));
+            console.log(`   Would send to: ${digits}@c.us\n`);
+            successCount++;
+            continue;
+        }
+
+        try {
+            const numberId = await client.getNumberId(digits);
+            if (!numberId) {
+                console.log(`   ⚠️  Skipped — ${digits} is not registered on WhatsApp`);
+                skipCount++;
+            } else {
+                await client.sendMessage(numberId._serialized, message);
+                console.log('   ✅ Sent successfully!');
+                successCount++;
+            }
+        } catch (error) {
+            console.log(`   ❌ Failed: ${error.message}`);
+        }
+
+        if (i < records.length - 1) {
+            const delay = getRandomDelay();
+            console.log(`   ⏳ Waiting ${Math.round(delay / 1000)} seconds before next recipient...\n`);
+            await sleep(delay);
+        }
+    }
+
+    const verb = dryRun ? 'previewed' : 'sent';
+    console.log(`\n✅ ${dryRun ? 'Dry run' : 'TP reminders'} complete — ${successCount}/${records.length} ${verb}${skipCount > 0 ? `, ${skipCount} skipped` : ''}.`);
+    return true;
+}
+
 // Handle errors
 client.on('auth_failure', (msg) => {
     stopSpinner();
@@ -1066,6 +1336,17 @@ if (command === 'send-telegram') {
         process.exit(0);
     })();
 } else {
+    // Validate tp.csv + template up front so a bad file doesn't waste a WhatsApp login
+    if (command === 'send-tp-reminders') {
+        console.log('🔍 Validating tp-reminders data...\n');
+        const validation = validateTpReminderData();
+        if (!validation.ok) {
+            console.log('\n❌ Please fix the above errors before sending reminders.');
+            process.exit(1);
+        }
+        console.log(`✅ ${validation.records.length} recipient(s) validated in ${TP_REMINDER_CONFIG.file}\n`);
+    }
+
     // Start WhatsApp client for other commands
     console.log('🚀 Starting WhatsApp client...\n');
     startSpinner('   Connecting to WhatsApp Web');

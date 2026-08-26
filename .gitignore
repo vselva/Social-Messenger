@@ -37,3 +37,7 @@ groups-*.json
 
 # Misc
 nul
+config/
+tp.csv
+config/telegram-groups-english-list.json
+config/telegram-groups-tamil-list.json
