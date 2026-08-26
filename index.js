@@ -594,8 +594,7 @@ client.once('ready', async () => {
             await sendToStatus(contentFolder);
         }
     } else if (command === 'send-tp-reminders') {
-        const dryRun = process.argv[3] === '--dry-run';
-        await sendTpReminders(dryRun);
+        await sendTpReminders(false);
     } else {
         console.log('Usage:');
         console.log('  node index.js send-all             - Send to WhatsApp status, groups, and Telegram');
@@ -1333,6 +1332,12 @@ if (command === 'send-telegram') {
         }
 
         console.log('\n👋 Done! Exiting...');
+        process.exit(0);
+    })();
+} else if (command === 'send-tp-reminders' && process.argv[3] === '--dry-run') {
+    // Dry run only reads tp.csv and previews messages - no WhatsApp connection needed
+    (async () => {
+        await sendTpReminders(true);
         process.exit(0);
     })();
 } else {
