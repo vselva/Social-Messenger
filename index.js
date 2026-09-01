@@ -754,11 +754,12 @@ async function sendToStatus(contentFolder) {
                     .catch((e) => { window.__wppStatusResult = { done: true, error: e.message || String(e) }; });
             }, base64DataUrl);
 
-            // Poll up to 60s for either WPP's own done/error signal, or the status
+            // Poll up to 3 minutes for either WPP's own done/error signal, or the status
             // message count actually increasing (covers the promise-hang case).
             // A timeout with neither signal means we do NOT know it posted — it
-            // must not be reported as success.
-            const deadline = Date.now() + 60000;
+            // must not be reported as success. HD status images can take a while
+            // for the server ACK to land, so give this more room than a normal send.
+            const deadline = Date.now() + 180000;
             let confirmed = false;
             while (Date.now() < deadline) {
                 const result = await client.pupPage.evaluate(() => window.__wppStatusResult);
@@ -781,7 +782,7 @@ async function sendToStatus(contentFolder) {
             }
 
             if (!confirmed) {
-                throw new Error('Timed out waiting for status to post — no confirmation received after 60s');
+                throw new Error('Timed out waiting for status to post — no confirmation received after 3 minutes');
             }
 
             console.log(`✅ ${langConfig.name.toUpperCase()} status posted successfully!\n`);
