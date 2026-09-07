@@ -11,7 +11,7 @@ const TP_REMINDER_CONFIG = {
 
 // Check for help command and validate commands first (before loading other dependencies)
 const command = process.argv[2];
-const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'send-tp-reminders', 'wa-list', 'wa-find', 'clean-images', 'queue-status', 'help', '-h', '--help'];
+const validCommands = ['send-all', 'send-wa', 'send-telegram', 'send-wa-status', 'send-tp-reminders', 'wa-list', 'wa-find', 'clean-images', 'queue-status', 'clear-session', 'help', '-h', '--help'];
 
 if (command === '-h' || command === '--help' || command === 'help' || !command) {
     console.log('Social Messenger - WhatsApp & Telegram\n');
@@ -26,6 +26,7 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
     console.log('  wa-find <link>       Look up a group ID from its invite link (works even if wa-list misses it)');
     console.log('  queue-status         Show how many messages are queued');
     console.log('  clean-images         Delete content from queue or root folder');
+    console.log('  clear-session        Delete the saved WhatsApp Web login session (fixes stuck/auth-timeout connections)');
     console.log('  help, -h             Show this help message\n');
     console.log('Queue Mode:');
     console.log('  Create queue/1/, queue/2/, etc. folders with e.jpg, t.jpg, english.txt, tamil.txt');
@@ -35,6 +36,7 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
     console.log('  node index.js send-telegram');
     console.log('  node index.js send-tp-reminders --dry-run');
     console.log('  node index.js queue-status');
+    console.log('  node index.js clear-session');
     process.exit(0);
 }
 
@@ -129,6 +131,30 @@ if (command === 'clean-images') {
     }
 
     console.log('\n✅ Done!');
+    process.exit(0);
+}
+
+// Handle clear-session command without loading dependencies
+if (command === 'clear-session') {
+    console.log('🗑️  Clearing saved WhatsApp Web session...\n');
+
+    const sessionPaths = ['./.wwebjs_auth', './.wwebjs_cache'];
+    let deletedAny = false;
+
+    for (const sessionPath of sessionPaths) {
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            console.log(`   🗑️  Deleted: ${sessionPath}`);
+            deletedAny = true;
+        }
+    }
+
+    if (!deletedAny) {
+        console.log('   No saved session found - nothing to clear.');
+    } else {
+        console.log("\n✅ Done! You'll need to scan the QR code again on the next run.");
+    }
+
     process.exit(0);
 }
 
