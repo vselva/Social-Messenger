@@ -30,7 +30,9 @@ if (command === '-h' || command === '--help' || command === 'help' || !command) 
     console.log('  help, -h             Show this help message\n');
     console.log('Queue Mode:');
     console.log('  Create queue/1/, queue/2/, etc. folders with e.jpg, t.jpg, english.txt, tamil.txt');
-    console.log('  send-all will send from the lowest numbered folder and delete it on success\n');
+    console.log('  send-all will send from the lowest numbered folder and delete it on success');
+    console.log('  Each successful send is recorded in the folder\'s .sent.json, so if anything fails,');
+    console.log('  running send-all again retries only what failed (no duplicates to groups)\n');
     console.log('Examples:');
     console.log('  node index.js send-all');
     console.log('  node index.js send-telegram');
@@ -69,6 +71,19 @@ if (command === 'queue-status') {
             console.log(`   📬 ${numericFolders.length} message(s) queued\n`);
             console.log('   Folders: ' + numericFolders.join(', '));
             console.log(`\n   Next to send: queue/${numericFolders[0]}/\n`);
+
+            const progressFile = path.join(queuePath, String(numericFolders[0]), '.sent.json');
+            if (fs.existsSync(progressFile)) {
+                try {
+                    const done = Object.keys(JSON.parse(fs.readFileSync(progressFile, 'utf8')));
+                    const statusDone = done.filter(k => k.startsWith('status:')).length;
+                    const groupsDone = done.length - statusDone;
+                    console.log(`   ⏯️  Partly sent already: ${statusDone} status post(s), ${groupsDone} group send(s)`);
+                    console.log('      send-all will retry only what is left\n');
+                } catch (error) {
+                    console.log(`   ⚠️  ${progressFile} is unreadable (${error.message}) - send-all will refuse to run until it is fixed or deleted\n`);
+                }
+            }
         }
     }
 
@@ -334,6 +349,54 @@ function deleteQueueFolder(folderPath) {
     fs.rmdirSync(folderPath);
     console.log(`   🗑️  Deleted queue folder: ${path.basename(folderPath)}`);
 }
+
+// ============== SEND PROGRESS (queue mode) ==============
+// Each queue folder keeps a .sent.json recording every status/group that already received
+// its content. Reruns skip those, so when one step fails (e.g. the status post) only that
+// step is retried instead of re-sending to every group. The file is deleted with the folder.
+// Root (fallback) mode is not tracked.
+const PROGRESS_FILE = '.sent.json';
+const progressCache = new Map();
+
+function isQueueFolder(folder) {
+    return path.resolve(path.dirname(folder)) === path.resolve(CONFIG.queueFolder);
+}
+
+function loadProgress(folder) {
+    if (!progressCache.has(folder)) {
+        const file = path.join(folder, PROGRESS_FILE);
+        let sent = {};
+        if (fs.existsSync(file)) {
+            try {
+                sent = JSON.parse(fs.readFileSync(file, 'utf8'));
+            } catch (error) {
+                // Refuse to guess: treating it as empty would re-send to every group
+                console.log(`❌ Cannot read ${file}: ${error.message}`);
+                console.log('   Fix or delete that file, then run again.');
+                process.exit(1);
+            }
+        }
+        progressCache.set(folder, sent);
+    }
+    return progressCache.get(folder);
+}
+
+function isAlreadySent(folder, key) {
+    return isQueueFolder(folder) && Boolean(loadProgress(folder)[key]);
+}
+
+function markSent(folder, key) {
+    if (!isQueueFolder(folder)) return;
+    const sent = loadProgress(folder);
+    sent[key] = new Date().toISOString();
+    fs.writeFileSync(path.join(folder, PROGRESS_FILE), JSON.stringify(sent, null, 2));
+}
+
+const progressKey = {
+    status: (lang) => `status:${lang}`,
+    whatsapp: (lang, group) => `whatsapp:${lang}:${group.id}`,
+    telegram: (lang, group) => `telegram:${lang}:${group.chatId}${group.topicId ? `/${group.topicId}` : ''}`
+};
 
 // Get chats with retry (WhatsApp internal data may not be ready immediately after 'ready' event)
 async function getChatsWithRetry(maxRetries = 5, delayMs = 3000) {
@@ -743,18 +806,25 @@ async function sendToStatus(contentFolder) {
     let allSuccess = true;
 
     // Post each language status (Tamil first, then English)
-    for (const langConfig of [...CONFIG.languages].reverse()) {
+    const statusOrder = [...CONFIG.languages].reverse();
+    for (const langConfig of statusOrder) {
         console.log('═'.repeat(60));
         console.log(`📨 Posting ${langConfig.name.toUpperCase()} status`);
         console.log('═'.repeat(60));
 
+        if (isAlreadySent(contentFolder, progressKey.status(langConfig.name))) {
+            console.log('⏭️  Already posted in an earlier run - skipping\n');
+            continue;
+        }
+
         const imagePath = findImageInFolder(contentFolder, langConfig.imagePrefix);
+        let hdImagePath = imagePath;
 
         try {
             console.log(`📷 Image: ${path.basename(imagePath)}`);
 
             // Upscale image for HD quality
-            const hdImagePath = await upscaleImageForHD(imagePath);
+            hdImagePath = await upscaleImageForHD(imagePath);
 
             // Read image as base64 data URL for WPP.status.sendImageStatus
             const imageBuffer = fs.readFileSync(hdImagePath);
@@ -762,76 +832,93 @@ async function sendToStatus(contentFolder) {
             const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
             const base64DataUrl = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
 
-            console.log(`📝 Posting image to status via WPP...`);
-
-            // Baseline status message count, so we can verify the post actually
-            // landed even if WPP's own promise never resolves (see below).
-            const baselineCount = await client.pupPage.evaluate(async () => {
-                const status = await WPP.status.getMyStatus();
-                return status.getAllMsgs().length;
-            });
-
-            // Fire WPP without awaiting — WPP posts status immediately but its Promise
-            // may never resolve (WhatsApp internal ACK can hang indefinitely)
-            await client.pupPage.evaluate((dataUrl) => {
-                window.__wppStatusResult = { done: false, error: null };
-                WPP.status.sendImageStatus(dataUrl)
-                    .then(() => { window.__wppStatusResult = { done: true, error: null }; })
-                    .catch((e) => { window.__wppStatusResult = { done: true, error: e.message || String(e) }; });
-            }, base64DataUrl);
-
-            // Poll up to 3 minutes for either WPP's own done/error signal, or the status
-            // message count actually increasing (covers the promise-hang case).
-            // A timeout with neither signal means we do NOT know it posted — it
-            // must not be reported as success. HD status images can take a while
-            // for the server ACK to land, so give this more room than a normal send.
-            const deadline = Date.now() + 180000;
-            let confirmed = false;
-            while (Date.now() < deadline) {
-                const result = await client.pupPage.evaluate(() => window.__wppStatusResult);
-                if (result && result.done) {
-                    if (result.error) throw new Error(result.error);
-                    confirmed = true;
+            let ack;
+            for (let attempt = 1; ; attempt++) {
+                console.log(`📝 Posting image to status via WPP${attempt > 1 ? ` (attempt ${attempt}/${STATUS_MAX_ATTEMPTS})` : ''}...`);
+                try {
+                    ack = await postImageStatus(base64DataUrl);
                     break;
+                } catch (error) {
+                    if (attempt >= STATUS_MAX_ATTEMPTS) throw error;
+                    console.log(`   ⚠️  ${error.message}`);
+                    console.log('   🔁 Retrying in 10 seconds...');
+                    await sleep(10000);
                 }
-
-                const currentCount = await client.pupPage.evaluate(async () => {
-                    const status = await WPP.status.getMyStatus();
-                    return status.getAllMsgs().length;
-                });
-                if (currentCount > baselineCount) {
-                    confirmed = true;
-                    break;
-                }
-
-                await sleep(3000);
             }
 
-            if (!confirmed) {
-                throw new Error('Timed out waiting for status to post — no confirmation received after 3 minutes');
-            }
-
-            console.log(`✅ ${langConfig.name.toUpperCase()} status posted successfully!\n`);
-
-            // Clean up temporary upscaled file if created
-            if (hdImagePath !== imagePath && fs.existsSync(hdImagePath)) {
-                fs.unlinkSync(hdImagePath);
-                console.log(`   🗑️  Cleaned up temporary HD file\n`);
-            }
-
-            // Wait a bit between status posts
-            if (langConfig !== CONFIG.languages[CONFIG.languages.length - 1]) {
-                console.log('⏳ Waiting 5 seconds before next status...\n');
-                await sleep(5000);
-            }
+            console.log(`✅ ${langConfig.name.toUpperCase()} status posted - confirmed by WhatsApp server (ack ${ack})\n`);
+            markSent(contentFolder, progressKey.status(langConfig.name));
         } catch (error) {
             console.log(`❌ Failed to post ${langConfig.name} status: ${error.message}\n`);
             allSuccess = false;
+        } finally {
+            // Clean up temporary upscaled file (also on failure)
+            if (hdImagePath && hdImagePath !== imagePath && fs.existsSync(hdImagePath)) {
+                fs.unlinkSync(hdImagePath);
+                console.log(`   🗑️  Cleaned up temporary HD file\n`);
+            }
+        }
+
+        // Wait a bit between status posts
+        if (langConfig !== statusOrder[statusOrder.length - 1]) {
+            console.log('⏳ Waiting 5 seconds before next status...\n');
+            await sleep(5000);
         }
     }
 
-    console.log('✅ All statuses posted!');
+    console.log(allSuccess ? '✅ All statuses posted!' : '⚠️  Some statuses failed to post');
     return allSuccess;
+}
+
+const STATUS_MAX_ATTEMPTS = 2;
+const STATUS_CONFIRM_TIMEOUT_MS = 180000;
+
+// Post one image to WhatsApp Status and wait until WhatsApp's SERVER has acknowledged it
+// (message ack > 0). Returns that ack; throws if it never arrives.
+// The new status showing up in our own status list is NOT proof it posted: WhatsApp Web adds
+// it there before the upload finishes, and if the upload then fails, nobody ever sees it.
+async function postImageStatus(dataUrl) {
+    const myStatusMsgs = () => client.pupPage.evaluate(async () => {
+        const status = await WPP.status.getMyStatus();
+        const msgs = status ? status.getAllMsgs() : [];
+        return msgs.map(m => ({ id: m.id.toString(), ack: m.ack }));
+    });
+
+    const baselineIds = new Set((await myStatusMsgs()).map(m => m.id));
+
+    // Fire without awaiting inside the page; we poll for the outcome below
+    await client.pupPage.evaluate((url) => {
+        window.__wppStatusResult = { done: false, error: null, ack: null };
+        WPP.status.sendImageStatus(url)
+            .then((r) => { window.__wppStatusResult = { done: true, error: null, ack: r && r.ack }; })
+            .catch((e) => { window.__wppStatusResult = { done: true, error: e.message || String(e), ack: null }; });
+    }, dataUrl);
+
+    // wa-js itself resolves only after the server ack, but gives up after ~30s. A slow upload
+    // can still land after that, so keep watching the new status message's own ack until our
+    // deadline before calling it a failure.
+    const deadline = Date.now() + STATUS_CONFIRM_TIMEOUT_MS;
+    let wppError = null;
+    let lastAck = null;
+    while (Date.now() < deadline) {
+        const result = await client.pupPage.evaluate(() => window.__wppStatusResult);
+        if (result.done && !result.error) return result.ack;
+        if (result.done) wppError = result.error;
+
+        const fresh = (await myStatusMsgs()).filter(m => !baselineIds.has(m.id));
+        if (fresh.length > 0) {
+            lastAck = Math.max(...fresh.map(m => m.ack));
+            if (lastAck > 0) return lastAck;
+            if (lastAck < 0) throw new Error(`WhatsApp rejected the status upload (ack ${lastAck})`);
+        } else if (wppError) {
+            throw new Error(wppError); // failed before WhatsApp even created the status
+        }
+
+        await sleep(3000);
+    }
+
+    const detail = lastAck === null ? 'status was never created' : `stuck at ack ${lastAck}, upload not confirmed`;
+    throw new Error(`No server confirmation after ${STATUS_CONFIRM_TIMEOUT_MS / 60000} minutes (${detail}${wppError ? `; wa-js: ${wppError}` : ''})`);
 }
 
 // Send to all language groups
@@ -878,14 +965,21 @@ async function sendToAllLanguages(contentFolder) {
         console.log('');
     }
 
-    console.log('✅ All messages sent!');
+    console.log(allSuccess ? '✅ All messages sent!' : '⚠️  Some WhatsApp group sends failed');
     return allSuccess;
 }
 
 // Send to groups for a specific language (sends directly by group ID from config)
 async function sendToLanguageGroups(lang, config, contentFolder) {
-    // Load group list for this language
-    const groupList = JSON.parse(fs.readFileSync(config.groupListFile, 'utf8'));
+    // Load group list for this language, minus groups that got it in an earlier run
+    const allGroups = JSON.parse(fs.readFileSync(config.groupListFile, 'utf8'));
+    const groupList = allGroups.filter(g => !isAlreadySent(contentFolder, progressKey.whatsapp(lang, g)));
+    const alreadySent = allGroups.length - groupList.length;
+
+    if (groupList.length === 0) {
+        console.log(`⏭️  Already sent to all ${allGroups.length} groups in an earlier run - skipping`);
+        return true;
+    }
 
     // Find image file by prefix and upscale for HD quality
     const imagePath = findImageInFolder(contentFolder, config.imagePrefix);
@@ -904,7 +998,8 @@ async function sendToLanguageGroups(lang, config, contentFolder) {
     console.log(messageText.substring(0, 100) + (messageText.length > 100 ? '...' : ''));
     console.log('─'.repeat(40));
 
-    console.log(`📱 Sending to ${groupList.length} groups\n`);
+    const skippedNote = alreadySent > 0 ? ` (skipping ${alreadySent} already sent in an earlier run)` : '';
+    console.log(`📱 Sending to ${groupList.length} groups${skippedNote}\n`);
 
     // Send to each group directly by ID
     let successCount = 0;
@@ -923,6 +1018,7 @@ async function sendToLanguageGroups(lang, config, contentFolder) {
             });
 
             console.log(`   ✅ Sent successfully!`);
+            markSent(contentFolder, progressKey.whatsapp(lang, group));
             successCount++;
 
             // Random delay before next group (except for last one)
@@ -1049,18 +1145,26 @@ async function sendToAllTelegramLanguages(contentFolder) {
         console.log('');
     }
 
-    console.log('✅ All Telegram messages sent!');
+    console.log(allSuccess ? '✅ All Telegram messages sent!' : '⚠️  Some Telegram sends failed');
     return allSuccess;
 }
 
 // Send to Telegram groups for a specific language
 async function sendToTelegramGroups(lang, config, contentFolder) {
-    // Load Telegram group list for this language
-    const groupList = JSON.parse(fs.readFileSync(config.telegramGroupListFile, 'utf8'));
+    // Load Telegram group list for this language, minus groups that got it in an earlier run
+    const allGroups = JSON.parse(fs.readFileSync(config.telegramGroupListFile, 'utf8'));
 
-    if (groupList.length === 0) {
+    if (allGroups.length === 0) {
         console.log(`⚠️  No Telegram groups configured for ${lang}`);
         return true; // No groups to send to, consider it success
+    }
+
+    const groupList = allGroups.filter(g => !isAlreadySent(contentFolder, progressKey.telegram(lang, g)));
+    const alreadySent = allGroups.length - groupList.length;
+
+    if (groupList.length === 0) {
+        console.log(`⏭️  Already sent to all ${allGroups.length} Telegram groups in an earlier run - skipping`);
+        return true;
     }
 
     // Find image file by prefix
@@ -1076,7 +1180,8 @@ async function sendToTelegramGroups(lang, config, contentFolder) {
     console.log(messageText.substring(0, 100) + (messageText.length > 100 ? '...' : ''));
     console.log('─'.repeat(40));
 
-    console.log(`\n📱 Sending to ${groupList.length} Telegram groups\n`);
+    const skippedNote = alreadySent > 0 ? ` (skipping ${alreadySent} already sent in an earlier run)` : '';
+    console.log(`\n📱 Sending to ${groupList.length} Telegram groups${skippedNote}\n`);
 
     // Send to each group
     let successCount = 0;
@@ -1100,6 +1205,7 @@ async function sendToTelegramGroups(lang, config, contentFolder) {
             await telegramBot.sendPhoto(group.chatId, imagePath, options);
 
             console.log(`   ✅ Sent successfully!`);
+            markSent(contentFolder, progressKey.telegram(lang, group));
             successCount++;
 
             // Random delay before next group (except for last one)
